@@ -1,0 +1,4 @@
+/sonarqube-exporter
+*.test
+*.out
+.DS_Store
