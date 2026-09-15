@@ -3,12 +3,41 @@ name: Build and push
 on:
   push:
     branches: [main]
+  pull_request:
 
 env:
   IMAGE: ghcr.io/${{ github.repository }}
 
 jobs:
+  sonarqube:
+    # Scans on every push and PR so SonarQube has both branch and PR
+    # analyses to decorate. Independent of the `build` job below -- a scan
+    # failure/timeout should never block the container publish, and vice
+    # versa.
+    #
+    # Requires SONAR_TOKEN (repo secret) and SONAR_HOST_URL (repo variable)
+    # to be set, and the target SonarQube server (this repo's sibling
+    # sonarqube-compose stack, tunnelled via ngrok) to be reachable from
+    # GitHub-hosted runners at scan time -- see that repo's README
+    # "GitHub Integration" section.
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0 # disable shallow clone for better analysis relevancy
+
+      - name: SonarQube Scan
+        uses: SonarSource/sonarqube-scan-action@c7ee0f9df90b7aa20e8dcf9695dcfe2e7da5b4f2 # v7.1.0
+        env:
+          SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
+          SONAR_HOST_URL: ${{ vars.SONAR_HOST_URL }}
+
   build:
+    # Only publish an image from main -- pull_request runs of this workflow
+    # should only run the sonarqube job above.
+    if: github.event_name == 'push'
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -27,7 +56,7 @@ jobs:
           go build ./...
 
       - name: Log in to GHCR
-        uses: docker/login-action@v3
+        uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3.6.0
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
