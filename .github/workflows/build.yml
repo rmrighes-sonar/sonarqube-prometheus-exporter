@@ -28,6 +28,18 @@ jobs:
         with:
           fetch-depth: 0 # disable shallow clone for better analysis relevancy
 
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: "1.25"
+
+      - name: Test with coverage
+        # sonar-project.properties points sonar.go.coverage.reportPaths at
+        # this exact file/format (Go's native cover profile, from `go test
+        # -coverprofile`) -- SonarQube's Go analyzer reads it directly, no
+        # conversion step needed.
+        run: go test ./... -coverprofile=coverage.out
+
       - name: SonarQube Scan
         uses: SonarSource/sonarqube-scan-action@c7ee0f9df90b7aa20e8dcf9695dcfe2e7da5b4f2 # v7.1.0
         env:
