@@ -252,18 +252,48 @@ func TestCollectorDescribe(t *testing.T) {
 	}
 }
 
-func TestCollectorCollectSuccess(t *testing.T) {
+// findMetricByLabel returns the value of the first metric whose label at
+// labelIdx equals want (and, if len(want) > 1, whose remaining labels also
+// match positionally), and whether a match was found. Flattens what would
+// otherwise be a repeated loop+if per assertion in the tests below.
+func findMetricByLabel(t *testing.T, metrics []prometheus.Metric, want ...string) (float64, bool) {
+	t.Helper()
+	for _, m := range metrics {
+		v, labels := metricValue(t, m)
+		if len(labels) < len(want) {
+			continue
+		}
+		if labelsMatch(labels, want) {
+			return v, true
+		}
+	}
+	return 0, false
+}
+
+func labelsMatch(labels, want []string) bool {
+	for i, w := range want {
+		if labels[i] != w {
+			return false
+		}
+	}
+	return true
+}
+
+func collectFromFakeSonarQube(t *testing.T) map[*prometheus.Desc][]prometheus.Metric {
+	t.Helper()
 	srv := newFakeSonarQube(t)
-	client := NewSonarQubeClient(srv.URL, "test-token")
-	c := NewCollector(client)
+	c := NewCollector(NewSonarQubeClient(srv.URL, "test-token"))
 
 	ch := make(chan prometheus.Metric, 200)
 	c.Collect(ch)
 	close(ch)
 
-	byDesc := groupByDesc(drain(ch))
+	return groupByDesc(drain(ch))
+}
 
-	// Exporter self-health: scrape succeeded end to end.
+func TestCollectorCollectSuccess(t *testing.T) {
+	byDesc := collectFromFakeSonarQube(t)
+
 	upMetrics := byDesc[upDesc]
 	if len(upMetrics) != 1 {
 		t.Fatalf("got %d %v metrics, want 1", len(upMetrics), upDesc)
@@ -282,51 +312,40 @@ func TestCollectorCollectSuccess(t *testing.T) {
 		t.Errorf("got %d project_last_analysis_timestamp_seconds metrics, want 1 (p1 only)", got)
 	}
 
-	// p1's coverage measure round-tripped correctly.
-	var sawP1Coverage bool
-	for _, m := range byDesc[projectCoverageDesc] {
-		v, labels := metricValue(t, m)
-		if len(labels) > 0 && labels[0] == "p1" {
-			sawP1Coverage = true
-			if v != 75.5 {
-				t.Errorf("p1 coverage = %v, want 75.5", v)
-			}
-		}
-	}
-	if !sawP1Coverage {
-		t.Error("no coverage metric found for p1")
-	}
-
-	// p1's new-code bugs (nested under Period) round-tripped correctly.
-	var sawP1NewBugs bool
-	for _, m := range byDesc[projectNewBugsDesc] {
-		v, labels := metricValue(t, m)
-		if len(labels) > 0 && labels[0] == "p1" {
-			sawP1NewBugs = true
-			if v != 1 {
-				t.Errorf("p1 new_bugs = %v, want 1", v)
-			}
-		}
-	}
-	if !sawP1NewBugs {
-		t.Error("no new_bugs metric found for p1")
-	}
-
-	// p1's last Compute Engine task was SUCCESS.
-	var sawP1Success bool
-	for _, m := range byDesc[projectLastAnalysisStatusDesc] {
-		v, labels := metricValue(t, m)
-		if len(labels) == 2 && labels[0] == "p1" && labels[1] == "SUCCESS" && v == 1 {
-			sawP1Success = true
-		}
-	}
-	if !sawP1Success {
-		t.Error("expected p1 last_analysis_status=SUCCESS to be 1")
-	}
-
 	// The portfolio was collected too (Governance/Enterprise-only feature).
 	if got := len(byDesc[portfolioInfoDesc]); got != 1 {
 		t.Errorf("got %d portfolio_info metrics, want 1", got)
+	}
+}
+
+func TestCollectorCollectMeasuresRoundTrip(t *testing.T) {
+	byDesc := collectFromFakeSonarQube(t)
+
+	// p1's coverage measure round-tripped correctly.
+	if v, ok := findMetricByLabel(t, byDesc[projectCoverageDesc], "p1"); !ok {
+		t.Error("no coverage metric found for p1")
+	} else if v != 75.5 {
+		t.Errorf("p1 coverage = %v, want 75.5", v)
+	}
+
+	// p1's new-code bugs (nested under Period) round-tripped correctly.
+	if v, ok := findMetricByLabel(t, byDesc[projectNewBugsDesc], "p1"); !ok {
+		t.Error("no new_bugs metric found for p1")
+	} else if v != 1 {
+		t.Errorf("p1 new_bugs = %v, want 1", v)
+	}
+}
+
+func TestCollectorCollectLastAnalysisStatus(t *testing.T) {
+	byDesc := collectFromFakeSonarQube(t)
+
+	// p1's last Compute Engine task was SUCCESS.
+	v, ok := findMetricByLabel(t, byDesc[projectLastAnalysisStatusDesc], "p1", "SUCCESS")
+	if !ok {
+		t.Fatal("expected a p1/SUCCESS last_analysis_status metric, found none")
+	}
+	if v != 1 {
+		t.Errorf("p1 last_analysis_status{status=SUCCESS} = %v, want 1", v)
 	}
 }
 
