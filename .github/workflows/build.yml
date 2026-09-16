@@ -40,8 +40,21 @@ jobs:
         # conversion step needed.
         run: go test ./... -coverprofile=coverage.out
 
+      - name: Determine project version
+        # Without an explicit sonar.projectVersion, every analysis records
+        # "not provided" as the version (visible in SonarQube's own
+        # Activity log/API). release-please's manifest is the single
+        # source of truth for "the current released version" -- it's
+        # accurate immediately after a release, and still the most recent
+        # meaningful version for ordinary commits/PRs in between releases.
+        id: version
+        run: echo "value=$(jq -r '.["."]' .release-please-manifest.json)" >> "$GITHUB_OUTPUT"
+
       - name: SonarQube Scan
         uses: SonarSource/sonarqube-scan-action@c7ee0f9df90b7aa20e8dcf9695dcfe2e7da5b4f2 # v7.1.0
+        with:
+          args: >
+            -Dsonar.projectVersion=${{ steps.version.outputs.value }}
         env:
           SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
           SONAR_HOST_URL: ${{ vars.SONAR_HOST_URL }}
