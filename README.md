@@ -63,6 +63,34 @@ secrets needed. The GHCR package is private, matching this repo's
 visibility; pulling it elsewhere requires `docker login ghcr.io` once with a
 token that has read access.
 
+### Releases
+
+Versioning follows [Semantic Versioning](https://semver.org/), automated by
+[release-please](https://github.com/googleapis/release-please) (see
+`.github/workflows/release-please.yml`,
+[release-please-config.json](release-please-config.json), and
+[.release-please-manifest.json](.release-please-manifest.json)). To get a
+correct version bump, commits to `main` must follow
+[Conventional Commits](https://www.conventionalcommits.org/):
+
+- `fix:` -- patch release (bug fix).
+- `feat:` -- minor release (new feature, e.g. a new metric).
+- `fix!:` / `feat!:` / a `BREAKING CHANGE:` footer -- major release (e.g. a
+  removed or renamed Prometheus metric).
+- `chore:`, `docs:`, `refactor:`, `test:`, `ci:` -- no release triggered on
+  their own.
+
+release-please maintains a standing "Release PR" that accumulates changes
+since the last release; merging it cuts the actual git tag, GitHub Release,
+and CHANGELOG.md entry. That same merge also triggers
+`publish-release-image` in the same workflow, which builds and pushes
+additional semver-tagged images --
+`ghcr.io/rmrighes-sonar/sonarqube-exporter:<version>`, `:<major>.<minor>`,
+and `:<major>` -- alongside the `:latest`/`:<git-sha>` tags `build.yml`
+already publishes on every push to `main`. Pin to a `:<major>` or
+`:<major>.<minor>` tag instead of `:latest` if you want a stable,
+intentionally-upgraded version in `sonarqube-compose`'s `compose.yaml`.
+
 ## How it works
 
 On every scrape (`/metrics` request), the exporter -- synchronously, no
