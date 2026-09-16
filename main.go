@@ -20,6 +20,33 @@ func getenv(key, fallback string) string {
 	return fallback
 }
 
+// newMux builds the exporter's HTTP handler, factored out of main so it's
+// testable without binding a real listener.
+func newMux(collector *Collector) *http.ServeMux {
+	registry := prometheus.NewRegistry()
+	registry.MustRegister(collector)
+
+	mux := http.NewServeMux()
+	mux.Handle("/metrics", promhttp.HandlerFor(registry, promhttp.HandlerOpts{}))
+	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/html; charset=utf-8")
+		_, _ = w.Write([]byte(`<html><body><h1>sonarqube-exporter</h1><p><a href="/metrics">/metrics</a></p></body></html>`))
+	})
+	// Liveness endpoint for orchestrators (e.g. this repo's own Docker
+	// Compose healthcheck) -- deliberately doesn't call out to SonarQube:
+	// it only confirms the exporter process itself is up and serving, so
+	// SonarQube being temporarily unreachable (reflected instead via the
+	// sonarqube_exporter_up gauge on /metrics) doesn't get the container
+	// killed/restarted by its own orchestrator.
+	mux.HandleFunc("/healthz", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte("ok"))
+	})
+
+	return mux
+}
+
 func main() {
 	sonarqubeURL := getenv("SONARQUBE_URL", "http://sonarqube:9000")
 	token := os.Getenv("SONARQUBE_API_TOKEN")
@@ -31,16 +58,7 @@ func main() {
 
 	client := NewSonarQubeClient(sonarqubeURL, token)
 	collector := NewCollector(client)
-
-	registry := prometheus.NewRegistry()
-	registry.MustRegister(collector)
-
-	mux := http.NewServeMux()
-	mux.Handle("/metrics", promhttp.HandlerFor(registry, promhttp.HandlerOpts{}))
-	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "text/html; charset=utf-8")
-		_, _ = w.Write([]byte(`<html><body><h1>sonarqube-exporter</h1><p><a href="/metrics">/metrics</a></p></body></html>`))
-	})
+	mux := newMux(collector)
 
 	log.Printf("sonarqube-exporter: listening on %s, target SonarQube at %s", listenAddr, sonarqubeURL)
 	log.Fatal(http.ListenAndServe(listenAddr, mux))
