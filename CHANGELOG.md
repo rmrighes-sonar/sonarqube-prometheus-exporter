@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.2.1](https://github.com/rmrighes-sonar/sonarqube-exporter/compare/v0.2.0...v0.2.1) (2026-09-16)
+
+
+### Bug Fixes
+
+* set sonar.projectVersion from release-please's manifest ([#7](https://github.com/rmrighes-sonar/sonarqube-exporter/issues/7)) ([05f2c7e](https://github.com/rmrighes-sonar/sonarqube-exporter/commit/05f2c7e3cce1c8e5a8575313438ba04ea001f9c7))
+
 ## [0.2.0](https://github.com/rmrighes-sonar/sonarqube-exporter/compare/v0.1.0...v0.2.0) (2026-09-16)
 
 
