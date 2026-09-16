@@ -100,3 +100,111 @@ func TestSonarQubeClientSearchMeasuresEmptyInput(t *testing.T) {
 		t.Errorf("SearchMeasures() with no component keys = %+v, want nil", measures)
 	}
 }
+
+func TestSonarQubeClientSearchMeasures(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/api/measures/search" {
+			t.Errorf("unexpected path: %s", r.URL.Path)
+		}
+		q := r.URL.Query()
+		if q.Get("projectKeys") != "p1,p2" {
+			t.Errorf("projectKeys = %q, want %q", q.Get("projectKeys"), "p1,p2")
+		}
+		if q.Get("metricKeys") != "bugs,coverage" {
+			t.Errorf("metricKeys = %q, want %q", q.Get("metricKeys"), "bugs,coverage")
+		}
+		_ = json.NewEncoder(w).Encode(measuresSearchResponse{
+			Measures: []Measure{
+				{Component: "p1", Metric: "bugs", Value: "1"},
+				{Component: "p2", Metric: "bugs", Value: "0"},
+			},
+		})
+	}))
+	defer srv.Close()
+
+	client := NewSonarQubeClient(srv.URL, "")
+	measures, err := client.SearchMeasures([]string{"p1", "p2"}, []string{"bugs", "coverage"})
+	if err != nil {
+		t.Fatalf("SearchMeasures() error = %v", err)
+	}
+	if len(measures) != 2 {
+		t.Fatalf("SearchMeasures() returned %d measures, want 2", len(measures))
+	}
+}
+
+func TestSonarQubeClientSearchPortfolios(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/api/components/search" {
+			t.Errorf("unexpected path: %s", r.URL.Path)
+		}
+		if got := r.URL.Query().Get("qualifiers"); got != "VW" {
+			t.Errorf("qualifiers = %q, want %q", got, "VW")
+		}
+		_ = json.NewEncoder(w).Encode(componentsSearchResponse{
+			Components: []Portfolio{{Key: "port1", Name: "Portfolio One"}},
+		})
+	}))
+	defer srv.Close()
+
+	client := NewSonarQubeClient(srv.URL, "")
+	portfolios, err := client.SearchPortfolios()
+	if err != nil {
+		t.Fatalf("SearchPortfolios() error = %v", err)
+	}
+	if len(portfolios) != 1 || portfolios[0].Key != "port1" {
+		t.Errorf("SearchPortfolios() = %+v, want one portfolio with key %q", portfolios, "port1")
+	}
+}
+
+func TestSonarQubeClientSearchPortfoliosEmpty(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewEncoder(w).Encode(componentsSearchResponse{})
+	}))
+	defer srv.Close()
+
+	client := NewSonarQubeClient(srv.URL, "")
+	portfolios, err := client.SearchPortfolios()
+	if err != nil {
+		t.Fatalf("SearchPortfolios() error = %v", err)
+	}
+	if len(portfolios) != 0 {
+		t.Errorf("SearchPortfolios() = %+v, want empty (non-Enterprise edition)", portfolios)
+	}
+}
+
+func TestSonarQubeClientRecentAnalyses(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/api/ce/activity" {
+			t.Errorf("unexpected path: %s", r.URL.Path)
+		}
+		q := r.URL.Query()
+		if q.Get("type") != "REPORT" {
+			t.Errorf("type = %q, want %q", q.Get("type"), "REPORT")
+		}
+		_ = json.NewEncoder(w).Encode(ceActivityResponse{
+			Tasks: []CETask{
+				{ComponentKey: "p1", Status: "SUCCESS", SubmittedAt: "2026-09-15T20:00:00+0000"},
+			},
+		})
+	}))
+	defer srv.Close()
+
+	client := NewSonarQubeClient(srv.URL, "")
+	tasks, err := client.RecentAnalyses()
+	if err != nil {
+		t.Fatalf("RecentAnalyses() error = %v", err)
+	}
+	if len(tasks) != 1 || tasks[0].ComponentKey != "p1" || tasks[0].Status != "SUCCESS" {
+		t.Errorf("RecentAnalyses() = %+v, want one SUCCESS task for p1", tasks)
+	}
+}
+
+func TestSonarQubeClientGetRequestBuildError(t *testing.T) {
+	// A control character in the host makes url.Parse (inside
+	// http.NewRequest) fail, exercising the "building request" error path
+	// without needing a live server.
+	client := NewSonarQubeClient("http://example.com/\x7f", "")
+	if _, err := client.SearchProjects(); err == nil {
+		t.Fatal("expected an error building the request, got nil")
+	}
+}
