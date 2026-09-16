@@ -4,10 +4,6 @@ on:
   push:
     branches: [main]
 
-permissions:
-  contents: write
-  pull-requests: write
-
 env:
   IMAGE: ghcr.io/${{ github.repository }}
 
@@ -19,6 +15,9 @@ jobs:
     # / .release-please-manifest.json). Ordinary commits to main just update
     # the pending PR, they don't publish anything.
     runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      pull-requests: write
     outputs:
       release_created: ${{ steps.release.outputs.release_created }}
       tag_name: ${{ steps.release.outputs.tag_name }}
