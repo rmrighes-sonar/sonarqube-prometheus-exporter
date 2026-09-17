@@ -1,5 +1,16 @@
 # Changelog
 
+## [1.0.0](https://github.com/rmrighes-sonar/sonarqube-prometheus-exporter/compare/v0.2.1...v1.0.0) (2026-09-17)
+
+
+### ⚠ BREAKING CHANGES
+
+* rename to sonarqube-prometheus-exporter
+
+### Features
+
+* rename to sonarqube-prometheus-exporter ([39073ac](https://github.com/rmrighes-sonar/sonarqube-prometheus-exporter/commit/39073ac2a78ef81005f6da4aa4024eff324169b7))
+
 ## [0.2.1](https://github.com/rmrighes-sonar/sonarqube-exporter/compare/v0.2.0...v0.2.1) (2026-09-16)
 
 
