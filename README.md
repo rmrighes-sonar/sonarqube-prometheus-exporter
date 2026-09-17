@@ -1,4 +1,4 @@
-# sonarqube-exporter
+# sonarqube-prometheus-exporter
 
 A Prometheus exporter for SonarQube project/portfolio business data --
 quality gates, bugs, vulnerabilities, coverage, ratings, and analysis
@@ -34,7 +34,7 @@ exporter only owns the data that endpoint doesn't cover.
 docker run --rm -p 9091:9091 \
   -e SONARQUBE_URL=http://sonarqube:9000 \
   -e SONARQUBE_API_TOKEN=your_token \
-  ghcr.io/rmrighes-sonar/sonarqube-exporter:latest
+  ghcr.io/rmrighes-sonar/sonarqube-prometheus-exporter:latest
 ```
 
 Then scrape/inspect `http://localhost:9091/metrics`.
@@ -51,13 +51,13 @@ Then scrape/inspect `http://localhost:9091/metrics`.
 
 ```
 go build ./...
-docker build -t sonarqube-exporter .
+docker build -t sonarqube-prometheus-exporter .
 ```
 
 ### CI/CD
 
 `.github/workflows/build.yml` builds and pushes
-`ghcr.io/rmrighes-sonar/sonarqube-exporter:latest` (and a `:<git-sha>` tag)
+`ghcr.io/rmrighes-sonar/sonarqube-prometheus-exporter:latest` (and a `:<git-sha>` tag)
 on every push to `main`, using the workflow's own `GITHUB_TOKEN` -- no extra
 secrets needed. The GHCR package is private, matching this repo's
 visibility; pulling it elsewhere requires `docker login ghcr.io` once with a
@@ -85,7 +85,7 @@ since the last release; merging it cuts the actual git tag, GitHub Release,
 and CHANGELOG.md entry. That same merge also triggers
 `publish-release-image` in the same workflow, which builds and pushes
 additional semver-tagged images --
-`ghcr.io/rmrighes-sonar/sonarqube-exporter:<version>`, `:<major>.<minor>`,
+`ghcr.io/rmrighes-sonar/sonarqube-prometheus-exporter:<version>`, `:<major>.<minor>`,
 and `:<major>` -- alongside the `:latest`/`:<git-sha>` tags `build.yml`
 already publishes on every push to `main`. Pin to a `:<major>` or
 `:<major>.<minor>` tag instead of `:latest` if you want a stable,
@@ -119,8 +119,8 @@ project/portfolio deleted from SonarQube simply stops appearing on the next
 scrape instead of leaving a stale series behind.
 
 If any SonarQube API call fails mid-scrape, the exporter still returns a
-valid (partial) `/metrics` response with `sonarqube_exporter_up 0` and an
-incremented `sonarqube_exporter_scrape_errors_total`, rather than a 500 or a
+valid (partial) `/metrics` response with `sonarqube_prometheus_exporter_up 0` and an
+incremented `sonarqube_prometheus_exporter_scrape_errors_total`, rather than a 500 or a
 crash.
 
 ## Metrics
@@ -163,9 +163,9 @@ metrics (SonarQube's portfolio-level API doesn't expose those):
 
 | Metric | Type |
 |---|---|
-| `sonarqube_exporter_up` | Gauge, `1`/`0` |
-| `sonarqube_exporter_scrape_duration_seconds` | Gauge |
-| `sonarqube_exporter_scrape_errors_total` | Counter |
+| `sonarqube_prometheus_exporter_up` | Gauge, `1`/`0` |
+| `sonarqube_prometheus_exporter_scrape_duration_seconds` | Gauge |
+| `sonarqube_prometheus_exporter_scrape_errors_total` | Counter |
 
 ## Trade-offs
 

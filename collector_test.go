@@ -299,7 +299,7 @@ func TestCollectorCollectSuccess(t *testing.T) {
 		t.Fatalf("got %d %v metrics, want 1", len(upMetrics), upDesc)
 	}
 	if v, _ := metricValue(t, upMetrics[0]); v != 1 {
-		t.Errorf("sonarqube_exporter_up = %v, want 1", v)
+		t.Errorf("sonarqube_prometheus_exporter_up = %v, want 1", v)
 	}
 
 	// Both projects got a project_info series.
@@ -367,7 +367,7 @@ func TestCollectorCollectProjectsSearchFailure(t *testing.T) {
 		t.Fatalf("got %d %v metrics, want 1", len(up), upDesc)
 	}
 	if v, _ := metricValue(t, up[0]); v != 0 {
-		t.Errorf("sonarqube_exporter_up = %v, want 0 after a failed scrape", v)
+		t.Errorf("sonarqube_prometheus_exporter_up = %v, want 0 after a failed scrape", v)
 	}
 }
 
@@ -391,7 +391,7 @@ func TestCollectorCollectNoProjectsNoPortfolios(t *testing.T) {
 
 	byDesc := groupByDesc(drain(ch))
 	if v, _ := metricValue(t, byDesc[upDesc][0]); v != 1 {
-		t.Errorf("sonarqube_exporter_up = %v, want 1 (empty results aren't an error)", v)
+		t.Errorf("sonarqube_prometheus_exporter_up = %v, want 1 (empty results aren't an error)", v)
 	}
 	if got := len(byDesc[projectInfoDesc]); got != 0 {
 		t.Errorf("got %d project_info metrics, want 0", got)

@@ -1,4 +1,4 @@
-module github.com/rmrighes-sonar/sonarqube-exporter
+module github.com/rmrighes-sonar/sonarqube-prometheus-exporter
 
 go 1.25.0
 

@@ -10,22 +10,22 @@ import (
 
 func TestGetenv(t *testing.T) {
 	t.Run("returns the env var when set", func(t *testing.T) {
-		t.Setenv("SONARQUBE_EXPORTER_TEST_VAR", "custom-value")
-		if got := getenv("SONARQUBE_EXPORTER_TEST_VAR", "fallback"); got != "custom-value" {
+		t.Setenv("SONARQUBE_PROMETHEUS_EXPORTER_TEST_VAR", "custom-value")
+		if got := getenv("SONARQUBE_PROMETHEUS_EXPORTER_TEST_VAR", "fallback"); got != "custom-value" {
 			t.Errorf("getenv() = %q, want %q", got, "custom-value")
 		}
 	})
 
 	t.Run("returns the fallback when unset", func(t *testing.T) {
-		_ = os.Unsetenv("SONARQUBE_EXPORTER_TEST_VAR_UNSET")
-		if got := getenv("SONARQUBE_EXPORTER_TEST_VAR_UNSET", "fallback"); got != "fallback" {
+		_ = os.Unsetenv("SONARQUBE_PROMETHEUS_EXPORTER_TEST_VAR_UNSET")
+		if got := getenv("SONARQUBE_PROMETHEUS_EXPORTER_TEST_VAR_UNSET", "fallback"); got != "fallback" {
 			t.Errorf("getenv() = %q, want %q", got, "fallback")
 		}
 	})
 
 	t.Run("returns the fallback when set to empty string", func(t *testing.T) {
-		t.Setenv("SONARQUBE_EXPORTER_TEST_VAR_EMPTY", "")
-		if got := getenv("SONARQUBE_EXPORTER_TEST_VAR_EMPTY", "fallback"); got != "fallback" {
+		t.Setenv("SONARQUBE_PROMETHEUS_EXPORTER_TEST_VAR_EMPTY", "")
+		if got := getenv("SONARQUBE_PROMETHEUS_EXPORTER_TEST_VAR_EMPTY", "fallback"); got != "fallback" {
 			t.Errorf("getenv() = %q, want %q", got, "fallback")
 		}
 	})
@@ -41,7 +41,7 @@ func TestNewMux(t *testing.T) {
 		wantBody   string // substring; empty means "don't check"
 	}{
 		{"/healthz", http.StatusOK, "ok"},
-		{"/", http.StatusOK, "sonarqube-exporter"},
+		{"/", http.StatusOK, "sonarqube-prometheus-exporter"},
 		{"/metrics", http.StatusOK, ""}, // exact body depends on registered collectors; just check it serves
 	}
 

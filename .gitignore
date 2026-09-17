@@ -1,4 +1,4 @@
-/sonarqube-exporter
+/sonarqube-prometheus-exporter
 *.test
 *.out
 .DS_Store

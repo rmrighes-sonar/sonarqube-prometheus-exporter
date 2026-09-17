@@ -63,8 +63,8 @@ var (
 	portfolioReliabilityDesc     = desc("portfolio_reliability_rating", "Reliability rating, 1 (A) to 5 (E).", "portfolio")
 	portfolioSecurityDesc        = desc("portfolio_security_rating", "Security rating, 1 (A) to 5 (E).", "portfolio")
 
-	upDesc             = desc("exporter_up", "Whether the last scrape of SonarQube's Web API succeeded (1) or not (0).")
-	scrapeDurationDesc = desc("exporter_scrape_duration_seconds", "Duration of the last scrape of SonarQube's Web API, in seconds.")
+	upDesc             = desc("prometheus_exporter_up", "Whether the last scrape of SonarQube's Web API succeeded (1) or not (0).")
+	scrapeDurationDesc = desc("prometheus_exporter_scrape_duration_seconds", "Duration of the last scrape of SonarQube's Web API, in seconds.")
 )
 
 // Collector implements prometheus.Collector by querying SonarQube's Web API
@@ -84,7 +84,7 @@ func NewCollector(client *SonarQubeClient) *Collector {
 		client: client,
 		scrapeErrors: prometheus.NewCounter(prometheus.CounterOpts{
 			Namespace: namespace,
-			Name:      "exporter_scrape_errors_total",
+			Name:      "prometheus_exporter_scrape_errors_total",
 			Help:      "Total number of errors encountered while scraping SonarQube's Web API.",
 		}),
 	}
@@ -104,12 +104,12 @@ func (c *Collector) Collect(ch chan<- prometheus.Metric) {
 	up := 1.0
 
 	if err := c.collectProjects(ch); err != nil {
-		log.Printf("sonarqube-exporter: error collecting projects: %v", err)
+		log.Printf("sonarqube-prometheus-exporter: error collecting projects: %v", err)
 		up = 0
 		c.scrapeErrors.Inc()
 	}
 	if err := c.collectPortfolios(ch); err != nil {
-		log.Printf("sonarqube-exporter: error collecting portfolios: %v", err)
+		log.Printf("sonarqube-prometheus-exporter: error collecting portfolios: %v", err)
 		up = 0
 		c.scrapeErrors.Inc()
 	}
