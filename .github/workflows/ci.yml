@@ -165,7 +165,17 @@ jobs:
           SONAR_HOST_URL: ${{ vars.SONAR_HOST_URL }}
 
   publish:
-    needs: [build, test, sonarqube]
+    # Only sonarqube listed here, not [build, test, sonarqube] -- naming all
+    # three drew three separate edges into this job on the Actions graph
+    # (build -> publish, test -> publish, sonarqube -> publish), which
+    # visually looks like a shortcut around sonarqube even though it isn't
+    # one. sonarqube alone is sufficient and produces a clean, honest
+    # straight-line graph: sonarqube can only report success if test (and
+    # transitively build) already did, so success() below still correctly
+    # requires all three to have succeeded. Artifact download by name below
+    # is unaffected either way -- it works across any jobs in the same run
+    # regardless of needs: declarations.
+    needs: sonarqube
     # Only publish an image from main, and only once the quality gate has
     # passed -- unlike the old design, an image can no longer publish while
     # sonarqube is failing. An explicit `if:` replaces the default implicit

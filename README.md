@@ -89,7 +89,8 @@ compiles anything:
 - **`sonarqube`** (needs `test`) -- downloads that coverage artifact and
   scans with it directly; **doesn't re-run the tests**. Requires
   `SONAR_TOKEN` (secret) and `SONAR_HOST_URL` (variable).
-- **`publish`** (needs `build`, `test`, `sonarqube`; push to `main` only) --
+- **`publish`** (needs `sonarqube`, which transitively requires `test` and
+  `build` to have succeeded first; push to `main` only) --
   downloads `build`'s binaries and assembles the image via
   `docker buildx build`, whose Dockerfile only `COPY`s the right prebuilt
   binary per platform (no in-container compilation). Pushes
