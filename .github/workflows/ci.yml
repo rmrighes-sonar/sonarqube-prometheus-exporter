@@ -1,11 +1,31 @@
 name: CI
 
-# One workflow, one visible pipeline graph: build -> test -> sonarqube ->
-# publish. Build-once, reuse-everywhere: the Go compiler runs exactly twice
-# total (this file's `build` cross-compile, `test`'s test-compile) --
+# One workflow, one visible pipeline graph:
+#
+#   version -> build -> test -> sonarqube -> release -> publish
+#
+# `version` computes the next semantic version (from Conventional Commits
+# since the last tag, via semantic-release --dry-run) and runs first,
+# sequentially before build -- deliberate, not a data dependency (build
+# doesn't consume version's output): the version for a commit should be
+# settled before anything else about that commit is validated. It only
+# exists on `push` -- see that job for why -- and `build` explicitly
+# tolerates it being skipped so pull_request runs still get validated.
+#
+# Build-once, reuse-everywhere still holds: the Go compiler runs exactly
+# twice total (`build`'s cross-compile, `test`'s test-compile).
 # `sonarqube` reuses test's coverage artifact instead of re-running tests,
 # and `publish`'s Docker image is assembled from build's prebuilt binaries
 # instead of recompiling inside the container (see Dockerfile).
+#
+# `release` only runs the real (non-dry-run) semantic-release on a `push`
+# to `main`, after `sonarqube` passes. Every merge to `main` now gets its
+# own tagged release -- this replaced release-please's PR-batching model
+# (see README.md's "Releases" section) -- so `publish` no longer needs a
+# separate "promote an already-built image's tags after the fact" step
+# the way the old release-please.yml did: it builds and pushes every tag
+# (:latest, :<sha>, and the version tags) in one place, once, right after
+# release confirms what version this commit became.
 on:
   push:
     branches: [main]
@@ -15,54 +35,94 @@ env:
   IMAGE: ghcr.io/${{ github.repository }}
 
 jobs:
-  changes:
-    # Determines whether this push/PR only touches release-please's
-    # CHANGELOG.md / .release-please-manifest.json. Deliberately not using
-    # `paths-ignore` on the triggers above for this: build/test/sonarqube
-    # are required status checks in branch protection, and a workflow that
-    # never runs at all for a given commit (via paths-ignore) leaves those
-    # checks permanently stuck as "Expected" -- unmergeable, with no
-    # override since enforce_admins is on. Instead this job always runs (so
-    # the checks always get a chance to report), and downstream jobs skip
-    # their real work via `if:`/needs: cascading for a release-only diff. A
-    # job skipped via `if:` reports conclusion "skipped", which GitHub
-    # explicitly treats as passing for required status check purposes.
+  version:
+    # Only exists on `push`: semantic-release's branch-matching check reads
+    # GitHub's own GITHUB_REF directly and can never pass on a
+    # `pull_request`'s detached synthetic merge ref regardless of
+    # dryRun/ci options (confirmed by testing in the sibling
+    # sonarqube-compose repo), and an approximate version doesn't affect
+    # correctness there anyway -- SonarQube's PR-analysis mode defines "new
+    # code" as diff-vs-target-branch, not by version. A job-level `if:`
+    # here (rather than per-step) means PR runs mark this `skipped` without
+    # ever starting a runner -- zero cost, not just cheap. `sonarqube`
+    # supplies its own plain-git fallback for PR runs where this job never
+    # ran at all (see that job below).
+    if: github.event_name == 'push'
     runs-on: ubuntu-latest
     permissions:
-      contents: read
+      # contents: write, not just read -- confirmed by testing: even with
+      # dryRun: true, semantic-release's core verification phase performs
+      # an actual git-push permission check (not merely a read-only
+      # preview), and fails outright ("Cannot push to the Git repository",
+      # EGITNOPERMISSION) without write access, despite never actually
+      # creating anything.
+      contents: write
     outputs:
-      release_only: ${{ steps.check.outputs.release_only }}
+      version: ${{ steps.version.outputs.version }}
     steps:
       - uses: actions/checkout@v7
         with:
-          fetch-depth: 0
+          fetch-depth: 0 # semantic-release needs full tag history
 
-      - id: check
-        run: |
-          set -euo pipefail
-          if [ "${{ github.event_name }}" = "pull_request" ]; then
-            BASE="${{ github.event.pull_request.base.sha }}"
-          else
-            BASE="${{ github.event.before }}"
-          fi
-          if [ -z "$BASE" ] || [ "$BASE" = "0000000000000000000000000000000000000000" ] || ! git cat-file -e "$BASE" 2>/dev/null; then
-            echo "No usable base commit to diff against (new branch or unavailable history) -- treating as a real change."
-            echo "release_only=false" >> "$GITHUB_OUTPUT"
-            exit 0
-          fi
-          CHANGED="$(git diff --name-only "$BASE" "${{ github.sha }}")"
-          echo "Changed files vs $BASE:"
-          echo "$CHANGED"
-          if [ -n "$CHANGED" ] && ! grep -qvE '^(CHANGELOG\.md|\.release-please-manifest\.json)$' <<< "$CHANGED"; then
-            echo "-> release-please changelog/manifest-only change, skipping build/test/sonarqube/publish"
-            echo "release_only=true" >> "$GITHUB_OUTPUT"
-          else
-            echo "release_only=false" >> "$GITHUB_OUTPUT"
-          fi
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 22
+
+      - name: Install semantic-release
+        # No package.json in this repo -- semantic-release runs fine
+        # without one (see .releaserc.json for its config), so it's
+        # installed ephemerally per-run rather than adding a second
+        # language toolchain to this otherwise Go-only repo. Exact-pinned
+        # (no ^/~ range) and --ignore-scripts: unpinned + script-executing
+        # installs of third-party packages both flagged by SonarQube
+        # (githubactions:S8543, S6505) as supply-chain risks.
+        #
+        # No conventional-changelog-conventionalcommits/custom "preset"
+        # here -- confirmed by testing in sonarqube-compose that
+        # @semantic-release/release-notes-generator bundles its own
+        # nested, older conventional-changelog-writer that can't be
+        # overridden by installing a newer one at the top level (npm won't
+        # substitute a version outside a package's own declared range into
+        # that package's private resolution). .releaserc.json uses
+        # semantic-release's bundled default ("angular") preset instead --
+        # no extra package, no version conflicts, and it already
+        # recognizes standard Conventional Commits syntax; the custom
+        # releaseRules there override the type-to-bump mapping regardless
+        # of preset.
+        run: npm install --no-save --ignore-scripts semantic-release@25.0.9
+
+      - name: Compute next version (dry run, no tag/release created)
+        # Writes to $GITHUB_OUTPUT itself (see the script) rather than via
+        # shell redirection -- semantic-release's own logger writes
+        # non-key=value progress lines straight to stdout, which would
+        # otherwise corrupt $GITHUB_OUTPUT if this whole command's output
+        # were naively piped into it.
+        id: version
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: node .github/semantic-release/print-next-version.mjs
 
   build:
-    needs: changes
-    if: needs.changes.outputs.release_only != 'true'
+    needs: version
+    # version is *legitimately* skipped on pull_request (see above), which
+    # would otherwise cascade-skip build/test/sonarqube too by default
+    # (needs: requires success(), and skipped != success) -- explicitly
+    # tolerate that here so PRs still actually get validated. A genuine
+    # failure in version (only possible on push) still correctly blocks
+    # everything downstream.
+    if: always() && (needs.version.result == 'success' || needs.version.result == 'skipped')
+    # Re-exposes version's output as its own so `test` (and transitively
+    # `sonarqube`) can reach it via a single-hop `needs:` chain instead of
+    # reaching directly back to `version`. Empty on PR runs (version didn't
+    # run) -- sonarqube supplies its own fallback for that case. Threading
+    # it through like this (instead of sonarqube also listing `version`
+    # directly in its own needs:) avoids drawing a second, direct
+    # version -> sonarqube edge on the Actions graph alongside the
+    # version -> build -> test chain -- the same redundant-edge mistake
+    # caught and fixed on `publish` in this repo's own history (see git
+    # log), just from a different direction.
+    outputs:
+      version: ${{ needs.version.outputs.version }}
     # go vet, then cross-compile the two binaries the rest of the pipeline
     # needs -- Go's cross-compiler targets linux/amd64 and linux/arm64
     # natively (CGO_ENABLED=0, no gcc/QEMU needed), so this is fast even for
@@ -100,9 +160,25 @@ jobs:
 
   test:
     needs: build
-    # Doesn't consume build's binaries -- the needs: edge is purely for
-    # fail-fast ordering (don't bother testing if vet/cross-compile already
-    # failed).
+    # always() && is required, not decorative: GitHub skips *evaluating* a
+    # job's if: entirely (short-circuiting straight to "skipped") whenever
+    # any ancestor was skipped, unless the condition contains always(),
+    # success(), failure(), or cancelled() -- confirmed by testing in the
+    # sibling sonarqube-compose repo. A bare `needs.build.result ==
+    # 'success'` would still cascade to "skipped" even when build actually
+    # succeeded, because version -- an ancestor via build -- is
+    # legitimately skipped on every pull_request. always() forces
+    # evaluation; the && condition then does the real check, restricted to
+    # build's own result rather than the default implicit success(), which
+    # checks the *entire* transitive ancestor chain rather than just this
+    # job's direct needs:.
+    if: always() && needs.build.result == 'success'
+    # Re-exposes build's (pass-through of version's) output the same way,
+    # one more hop down the chain -- doesn't consume build's binaries
+    # itself, the needs: edge is purely for fail-fast ordering (don't
+    # bother testing if vet/cross-compile already failed).
+    outputs:
+      version: ${{ needs.build.outputs.version }}
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -128,6 +204,10 @@ jobs:
 
   sonarqube:
     needs: test
+    # Same reasoning as test's if: above -- always() forces evaluation
+    # despite version's skip further up the chain; the && condition
+    # restricts to test's own result.
+    if: always() && needs.test.result == 'success'
     # Requires SONAR_TOKEN (repo secret) and SONAR_HOST_URL (repo variable)
     # to be set, and the target SonarQube server (this repo's sibling
     # sonarqube-compose stack, tunnelled via ngrok) to be reachable from
@@ -145,46 +225,75 @@ jobs:
         with:
           name: coverage
 
-      - name: Determine project version
-        # Without an explicit sonar.projectVersion, every analysis records
-        # "not provided" as the version (visible in SonarQube's own
-        # Activity log/API). release-please's manifest is the single
-        # source of truth for "the current released version" -- it's
-        # accurate immediately after a release, and still the most recent
-        # meaningful version for ordinary commits/PRs in between releases.
-        id: version
-        run: echo "value=$(jq -r '.["."]' .release-please-manifest.json)" >> "$GITHUB_OUTPUT"
+      - name: Resolve version (falls back to latest tag on pull_request, where the version job never runs)
+        id: resolved_version
+        run: |
+          set -euo pipefail
+          V="${{ needs.test.outputs.version }}"
+          if [ -z "$V" ]; then
+            TAG="$(git describe --tags --abbrev=0 2>/dev/null || echo v0.0.0)"
+            V="${TAG#v}"
+          fi
+          echo "value=$V" >> "$GITHUB_OUTPUT"
 
       - name: SonarQube Scan
         uses: SonarSource/sonarqube-scan-action@c7ee0f9df90b7aa20e8dcf9695dcfe2e7da5b4f2 # v7.1.0
         with:
           args: >
-            -Dsonar.projectVersion=${{ steps.version.outputs.value }}
+            -Dsonar.projectVersion=${{ steps.resolved_version.outputs.value }}
         env:
           SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
           SONAR_HOST_URL: ${{ vars.SONAR_HOST_URL }}
 
-  publish:
-    # Only sonarqube listed here, not [build, test, sonarqube] -- naming all
-    # three drew three separate edges into this job on the Actions graph
-    # (build -> publish, test -> publish, sonarqube -> publish), which
-    # visually looks like a shortcut around sonarqube even though it isn't
-    # one. sonarqube alone is sufficient and produces a clean, honest
-    # straight-line graph: sonarqube can only report success if test (and
-    # transitively build) already did, so success() below still correctly
-    # requires all three to have succeeded. Artifact download by name below
-    # is unaffected either way -- it works across any jobs in the same run
-    # regardless of needs: declarations.
+  release:
     needs: sonarqube
-    # Only publish an image from main, and only once the quality gate has
-    # passed -- unlike the old design, an image can no longer publish while
-    # sonarqube is failing. An explicit `if:` replaces the default implicit
-    # success()-on-needs check entirely (GitHub doesn't AND them together),
-    # so success() must be spelled out here too -- otherwise this would
-    # still attempt to run (and fail downloading build's never-uploaded
-    # artifact) on a release-only push where build/test/sonarqube all
-    # skipped rather than succeeded.
-    if: github.event_name == 'push' && success()
+    # Only cut a real release from main, and only once the quality gate has
+    # passed. always() forces if: evaluation despite version's skip
+    # further up the chain on pull_request runs (moot for release itself,
+    # since it's already push-gated below, but needed for consistency --
+    # without it this job would show "skipped" on every push too, for the
+    # same short-circuiting reason as test/sonarqube above).
+    if: always() && github.event_name == 'push' && needs.sonarqube.result == 'success'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    outputs:
+      released: ${{ steps.release.outputs.released }}
+      version: ${{ steps.release.outputs.version }}
+      major: ${{ steps.release.outputs.major }}
+      minor: ${{ steps.release.outputs.minor }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 22
+
+      - name: Install semantic-release
+        # See the matching note in the `version` job above -- no
+        # conventional-changelog-conventionalcommits, default "angular"
+        # preset instead.
+        run: npm install --no-save --ignore-scripts semantic-release@25.0.9
+
+      - name: Release
+        # Uses the programmatic API (via release.mjs) rather than the
+        # plain CLI -- unlike the sibling sonarqube-compose repo, `publish`
+        # below needs to know the exact version and whether a release
+        # actually happened, which the CLI's exit code/logs don't expose
+        # cleanly.
+        id: release
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: node .github/semantic-release/release.mjs
+
+  publish:
+    needs: release
+    # Only publish once release confirms a version was actually cut --
+    # always() forces evaluation past version's skip on the ancestor
+    # chain, same reasoning as test/sonarqube above.
+    if: always() && github.event_name == 'push' && needs.release.outputs.released == 'true'
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -210,6 +319,12 @@ jobs:
         uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3.12.0
 
       - name: Build and push
+        # Every push is now a release, so every tag -- :latest, :<sha>, and
+        # the version tags -- gets pushed here in one place, once. No more
+        # separate "promote an already-built :<sha> image's tags after the
+        # fact" step the way the old release-please.yml's
+        # publish-release-image job worked (see git history) -- there's no
+        # more "ordinary push" vs. "release push" distinction to bridge.
         uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6.19.2
         with:
           context: .
@@ -218,3 +333,6 @@ jobs:
           tags: |
             ${{ env.IMAGE }}:latest
             ${{ env.IMAGE }}:${{ github.sha }}
+            ${{ env.IMAGE }}:${{ needs.release.outputs.version }}
+            ${{ env.IMAGE }}:${{ needs.release.outputs.major }}.${{ needs.release.outputs.minor }}
+            ${{ env.IMAGE }}:${{ needs.release.outputs.major }}

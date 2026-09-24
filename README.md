@@ -65,71 +65,81 @@ docker build -t sonarqube-prometheus-exporter .
 
 ### CI/CD
 
-`.github/workflows/ci.yml` is a single workflow with four jobs chained via
+`.github/workflows/ci.yml` is a single workflow with six jobs chained via
 `needs:` so the whole pipeline renders as one graph on the Actions run page:
 
 ```mermaid
 flowchart LR
-    changes[Detect changed files] --> build[Build] --> test[Test] --> sonar[SonarQube Analysis] --> publish[Publish]
+    version[Compute next version] --> build[Build] --> test[Test] --> sonar[SonarQube Analysis] --> release[Release] --> publish[Publish]
 ```
 
 **Build-once, reuse-everywhere** -- the Go compiler runs exactly twice total
 per run (`build`'s cross-compile, `test`'s test-compile), and Docker never
 compiles anything:
 
-- **`changes`** -- always runs first; diffs the push/PR against its base
-  commit to detect a release-please-only change (see "Release commits are
-  skipped" below for why this exists as a job instead of a simpler
-  trigger-level filter).
-- **`build`** -- `go vet`, then cross-compiles static `linux/amd64` and
-  `linux/arm64` binaries natively (Go's own cross-compiler, no QEMU needed)
-  and uploads them as a build artifact.
+- **`version`** -- computes the next [semantic version](https://semver.org/)
+  from [Conventional Commits](https://www.conventionalcommits.org/) since
+  the last `vX.Y.Z` tag, via `semantic-release --dry-run` (see
+  [Releases](#releases) below) -- no tag or release is created yet, this is
+  purely a preview. **Only exists on `push`** (job-level `if:`) -- on
+  `pull_request`, GitHub marks it `skipped` without ever starting a
+  runner, zero cost, since semantic-release's branch-matching check reads
+  `GITHUB_REF` directly and can never pass on a PR's detached synthetic
+  merge ref regardless of `dryRun`/`ci` options, and an approximate version
+  doesn't affect correctness there anyway -- SonarQube's PR-analysis mode
+  defines "new code" as diff-vs-target-branch, not by version. Runs first,
+  sequentially before `build` -- a deliberate ordering choice, not a data
+  dependency (`build` doesn't consume its output): the version for a
+  commit is settled before anything else about it is validated.
+- **`build`** (needs `version`, explicitly tolerating it being `skipped`
+  as well as `success`) -- `go vet`, then cross-compiles static
+  `linux/amd64` and `linux/arm64` binaries natively (Go's own
+  cross-compiler, no QEMU needed) and uploads them as a build artifact.
 - **`test`** (needs `build`) -- `go test -coverprofile=coverage.out`,
   uploads `coverage.out` as an artifact.
 - **`sonarqube`** (needs `test`) -- downloads that coverage artifact and
-  scans with it directly; **doesn't re-run the tests**. Requires
-  `SONAR_TOKEN` (secret) and `SONAR_HOST_URL` (variable).
-- **`publish`** (needs `sonarqube`, which transitively requires `test` and
-  `build` to have succeeded first; push to `main` only) --
+  scans with it directly; **doesn't re-run the tests**. Stamped with the
+  version this exact commit will ship as rather than whatever was last
+  already released. On `pull_request`, where `version` never ran and the
+  threaded value is empty, `sonarqube` resolves its own fallback directly
+  via `git describe --tags`. Requires `SONAR_TOKEN` (secret) and
+  `SONAR_HOST_URL` (variable).
+- **`release`** (needs `sonarqube`; `push` to `main` only) -- runs
+  `semantic-release` for real once the quality gate has passed, cutting
+  the actual git tag and GitHub Release. Uses the programmatic API (via
+  `.github/semantic-release/release.mjs`) rather than the plain CLI --
+  `publish` below needs the exact version and confirmation that a release
+  actually happened, which the CLI's exit code/logs don't expose cleanly.
+- **`publish`** (needs `release`; only if a release actually happened) --
   downloads `build`'s binaries and assembles the image via
   `docker buildx build`, whose Dockerfile only `COPY`s the right prebuilt
   binary per platform (no in-container compilation). Pushes
-  `ghcr.io/rmrighes-sonar/sonarqube-prometheus-exporter:latest` and
-  `:<git-sha>`. **Now gated on `sonarqube` passing** -- unlike before, a
-  quality-gate failure blocks the image publish.
+  `ghcr.io/rmrighes-sonar/sonarqube-prometheus-exporter:latest`,
+  `:<git-sha>`, and the version tags (`:<version>`, `:<major>.<minor>`,
+  `:<major>`) -- every push is now a release (see
+  [Releases](#releases) below), so there's no more separate "promote an
+  already-built image's tags after the fact" step the way release-please's
+  `publish-release-image` job used to work; everything happens once, here.
+  Gated on `sonarqube` passing -- a quality-gate failure blocks the image
+  publish entirely.
 
-**Release commits are skipped -- via job-level `if:`, not `paths-ignore`:**
-release-please's Release PRs and their merge commits only ever touch
-`CHANGELOG.md` / `.release-please-manifest.json`, so there's nothing new
-for `build`/`test`/`sonarqube`/`publish` to do there -- see
-[Releases](#releases) below. It's tempting to skip this with `paths-ignore`
-on the workflow's triggers, but **don't**: `build`/`test`/`sonarqube` are
-required status checks in branch protection, and a workflow that never runs
-at all for a given commit leaves those checks stuck as "Expected" forever
--- unmergeable, with no override since `main`'s protection also enforces
-against admins. Instead, `changes` always runs (so the checks always get a
-chance to report), and `build` skips its real work via
-`if: needs.changes.outputs.release_only != 'true'` -- `test` and
-`sonarqube` then skip too automatically, cascading through their `needs:`
-chain (a job's default condition requires its dependencies to have
-succeeded; skipped doesn't count as succeeded). `publish` needed an extra
-fix for this: it already had an explicit `if: github.event_name == 'push'`,
-which *replaces* the default implicit success-on-needs check rather than
-adding to it, so it now reads
-`if: github.event_name == 'push' && success()` to still cascade-skip
-correctly. A job skipped via `if:` reports conclusion "skipped", which
-GitHub explicitly treats as passing for required status checks -- unlike a
-check that never ran.
+Several jobs use `if: always() && ...` instead of a bare condition --
+that's required, not decorative: GitHub skips *evaluating* a job's `if:`
+entirely (short-circuiting straight to `skipped`) whenever any ancestor was
+skipped, unless the condition itself calls `always()`, `success()`,
+`failure()`, or `cancelled()`. Since `version` is legitimately skipped on
+every `pull_request`, every job downstream needs this guard to actually
+run its own real check rather than silently cascading to `skipped` too.
 
 The GHCR package is public, matching this repo's visibility.
 
 **`main` is protected:** merging requires an open pull request with `build`,
-`test`, and `sonarqube` all green (`publish` doesn't run on PRs, so it isn't
-a required check), and direct pushes/force-pushes/deletion of `main` are
-blocked. There's intentionally no required-approval count -- GitHub never
-allows an account to approve its own pull request, and this repo has a
-single maintainer, so requiring N approvals would make every PR permanently
-unmergeable.
+`test`, and `sonarqube` all green (`release`/`publish` don't run on PRs, so
+they aren't required checks), and direct pushes/force-pushes/deletion of
+`main` are blocked. There's intentionally no required-approval count --
+GitHub never allows an account to approve its own pull request, and this
+repo has a single maintainer, so requiring N approvals would make every PR
+permanently unmergeable.
 
 **Known bottleneck:** SonarQube here is self-hosted, reachable only through
 `sonarqube-compose`'s `ngrok` tunnel. If that stack or tunnel isn't up when
@@ -140,33 +150,52 @@ stack is back up.
 ### Releases
 
 Versioning follows [Semantic Versioning](https://semver.org/), automated by
-[release-please](https://github.com/googleapis/release-please) (see
-`.github/workflows/release-please.yml`,
-[release-please-config.json](release-please-config.json), and
-[.release-please-manifest.json](.release-please-manifest.json)). To get a
-correct version bump, commits to `main` must follow
-[Conventional Commits](https://www.conventionalcommits.org/):
+[semantic-release](https://semantic-release.gitbook.io/) (see
+[`.releaserc.json`](.releaserc.json) and the `version`/`release` jobs in
+[`.github/workflows/ci.yml`](.github/workflows/ci.yml)).
 
-- `fix:` -- patch release (bug fix).
+**Every merge to `main` becomes its own tagged release** -- this
+deliberately replaced release-please's model of batching several commits
+into a standing "Release PR" merged later. To get a correct version bump,
+commits must follow
+[Conventional Commits](https://www.conventionalcommits.org/); the bump type
+is decided by [`.releaserc.json`](.releaserc.json)'s `releaseRules`:
+
 - `feat:` -- minor release (new feature, e.g. a new metric).
-- `fix!:` / `feat!:` / a `BREAKING CHANGE:` footer -- major release (e.g. a
-  removed or renamed Prometheus metric).
-- `chore:`, `docs:`, `refactor:`, `test:`, `ci:` -- no release triggered on
-  their own.
+- everything else with a recognized type (`fix:`, `perf:`, `docs:`,
+  `chore:`, `refactor:`, `test:`, `build:`, `ci:`, ...) -- patch release.
+  Unlike typical Conventional Commits tooling (including release-please,
+  used previously here), `chore:`/`docs:`/`ci:`/etc. are **not** excluded
+  from releasing -- every merge gets a version, per this repo's policy that
+  any change to `main` should be traceable to a release.
+- `!` after the type/scope, or a `BREAKING CHANGE:` footer -- major release
+  regardless of type (e.g. a removed or renamed Prometheus metric).
 
-release-please maintains a standing "Release PR" that accumulates changes
-since the last release; merging it cuts the actual git tag, GitHub Release,
-and CHANGELOG.md entry. That same merge also triggers
-`publish-release-image` in the same workflow, which adds semver tags --
-`ghcr.io/rmrighes-sonar/sonarqube-prometheus-exporter:<version>`, `:<major>.<minor>`,
-and `:<major>` -- onto the `:<git-sha>` image `ci.yml`'s `publish` job
-already built and pushed for that exact commit. It does this via
-`docker buildx imagetools create` (a manifest copy), not a rebuild -- the
-code was already compiled, tested, scanned, and published seconds earlier
-by `ci.yml`, so there's nothing to gain from recompiling it a second time
-just to attach version tags. Pin to a `:<major>` or `:<major>.<minor>` tag
-instead of `:latest` if you want a stable, intentionally-upgraded version in
-`sonarqube-compose`'s `compose.yaml`.
+**Squash-merge caveat:** GitHub squash-merges a PR into a single commit on
+`main`, and semantic-release only reads *that* commit's header line to
+classify the whole PR -- not each original commit buried in the squash
+body. If a PR mixes commit types (e.g. a `ci:` commit and a `fix:` commit),
+title the PR after its most significant change, since the PR title becomes
+the squash commit's header and therefore the release-determining line.
+
+There is no more `CHANGELOG.md` file being updated -- release notes are
+generated by `@semantic-release/release-notes-generator` and published
+directly to each
+[GitHub Release](https://github.com/rmrighes-sonar/sonarqube-prometheus-exporter/releases).
+The old `CHANGELOG.md` is kept as a frozen historical record of everything
+through `v1.0.0` (release-please's last release before this switch).
+
+Because `semantic-release` only ever creates a **tag**, never a commit,
+cutting a release doesn't push anything new to `main` -- no "release
+commit" for `ci.yml` to redundantly re-validate, re-scan, or re-publish an
+image for.
+
+`publish` pushes `ghcr.io/rmrighes-sonar/sonarqube-prometheus-exporter:<version>`,
+`:<major>.<minor>`, and `:<major>` alongside `:latest`/`:<git-sha>` in the
+same build -- no separate rebuild or manifest-promotion step. Pin to a
+`:<major>` or `:<major>.<minor>` tag instead of `:latest` if you want a
+stable, intentionally-upgraded version in `sonarqube-compose`'s
+`compose.yaml`.
 
 ## How it works
 
