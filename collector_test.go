@@ -208,6 +208,10 @@ func newFakeSonarQube(t *testing.T) *httptest.Server {
 		})
 	})
 
+	mux.HandleFunc("/api/system/health", func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewEncoder(w).Encode(SystemHealth{Health: "GREEN"})
+	})
+
 	srv := httptest.NewServer(mux)
 	t.Cleanup(srv.Close)
 	return srv
@@ -349,6 +353,66 @@ func TestCollectorCollectLastAnalysisStatus(t *testing.T) {
 	}
 }
 
+func TestCollectorCollectSystemHealth(t *testing.T) {
+	byDesc := collectFromFakeSonarQube(t)
+
+	v, ok := findMetricByLabel(t, byDesc[systemHealthStatusDesc], "GREEN")
+	if !ok {
+		t.Fatal("expected a GREEN system_health_status metric, found none")
+	}
+	if v != 1 {
+		t.Errorf("system_health_status{status=GREEN} = %v, want 1", v)
+	}
+
+	if _, ok := findMetricByLabel(t, byDesc[systemHealthStatusDesc], "RED"); !ok {
+		t.Error("expected a RED system_health_status metric (value 0), found none")
+	}
+
+	causes := byDesc[systemHealthCausesDesc]
+	if len(causes) != 1 {
+		t.Fatalf("got %d system_health_causes_total metrics, want 1", len(causes))
+	}
+	if v, _ := metricValue(t, causes[0]); v != 0 {
+		t.Errorf("system_health_causes_total = %v, want 0 (fake server returns no causes)", v)
+	}
+}
+
+// TestCollectorCollectSystemHealthPermissionDenied verifies the deliberate
+// asymmetry documented on collectSystemHealth: unlike collectProjects/
+// collectPortfolios, a failure fetching /api/system/health (e.g. the
+// token lacks "Administer System") must NOT flip sonarqube_prometheus_exporter_up
+// to 0 or increment scrape_errors_total -- it should just silently omit the
+// system_health_* metrics for that scrape.
+func TestCollectorCollectSystemHealthPermissionDenied(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/api/projects/search":
+			_ = json.NewEncoder(w).Encode(projectsSearchResponse{})
+		case "/api/components/search":
+			_ = json.NewEncoder(w).Encode(componentsSearchResponse{})
+		case "/api/system/health":
+			w.WriteHeader(http.StatusForbidden)
+		default:
+			t.Errorf("unexpected call to %s", r.URL.Path)
+		}
+	}))
+	defer srv.Close()
+
+	c := NewCollector(NewSonarQubeClient(srv.URL, ""))
+	ch := make(chan prometheus.Metric, 20)
+	c.Collect(ch)
+	close(ch)
+
+	byDesc := groupByDesc(drain(ch))
+
+	if v, _ := metricValue(t, byDesc[upDesc][0]); v != 1 {
+		t.Errorf("sonarqube_prometheus_exporter_up = %v, want 1 (system/health failure must be non-fatal)", v)
+	}
+	if got := len(byDesc[systemHealthStatusDesc]); got != 0 {
+		t.Errorf("got %d system_health_status metrics, want 0 when system/health is forbidden", got)
+	}
+}
+
 func TestCollectorCollectProjectsSearchFailure(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusInternalServerError)
@@ -378,6 +442,8 @@ func TestCollectorCollectNoProjectsNoPortfolios(t *testing.T) {
 			_ = json.NewEncoder(w).Encode(projectsSearchResponse{})
 		case "/api/components/search":
 			_ = json.NewEncoder(w).Encode(componentsSearchResponse{})
+		case "/api/system/health":
+			_ = json.NewEncoder(w).Encode(SystemHealth{Health: "GREEN"})
 		default:
 			t.Errorf("unexpected call to %s", r.URL.Path)
 		}

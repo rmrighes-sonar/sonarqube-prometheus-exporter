@@ -44,7 +44,7 @@ Then scrape/inspect `http://localhost:9091/metrics`.
 | Env var | Default | Description |
 |---|---|---|
 | `SONARQUBE_URL` | `http://sonarqube:9000` | Base URL of the SonarQube instance to query. |
-| `SONARQUBE_API_TOKEN` | _(none)_ | Bearer token. Needs Browse permission on the projects/portfolios to be charted. Generate via **My Account > Security > Generate Tokens**, or a dedicated read-only service account. |
+| `SONARQUBE_API_TOKEN` | _(none)_ | Bearer token. Needs Browse permission on the projects/portfolios to be charted. Must be a **User Token** (not a Project Analysis Token -- those authenticate scanner runs only and 401 on every other Web API call). Optionally also grant **Administer System** to enable the `sonarqube_system_health_*` metrics below; without it, those two metrics are simply omitted (not a scrape failure). Generate via **My Account > Security > Generate Tokens**, or a dedicated read-only service account. |
 | `LISTEN_ADDR` | `:9091` | Address the exporter's HTTP server listens on. |
 
 ### Building locally
@@ -264,6 +264,27 @@ metrics (SonarQube's portfolio-level API doesn't expose those):
 `sonarqube_portfolio_info`, `_quality_gate_status`, `_bugs`,
 `_vulnerabilities`, `_coverage_percent`, `_duplicated_lines_percent`,
 `_lines_of_code`, `_reliability_rating`, `_security_rating`.
+
+### System health (requires "Administer System")
+
+| Metric | Type | Notes |
+|---|---|---|
+| `sonarqube_system_health_status` | Gauge | Labels: `status` (`GREEN`/`YELLOW`/`RED`). `1` for the current status, `0` for the others -- same convention as `sonarqube_project_quality_gate_status`. Sourced from `GET /api/system/health`, which requires the **Administer System** global permission -- a stricter requirement than every other metric in this exporter (which only need Browse). |
+| `sonarqube_system_health_causes_total` | Gauge | Number of causes currently contributing to a non-GREEN status. The specific cause messages themselves aren't exposed as metric text/labels (unbounded cardinality); query `/api/system/health` directly if you need them. |
+
+Unlike `collectProjects`/`collectPortfolios`, a failure fetching this one
+(e.g. missing permission) is **non-fatal**: it's logged and the two metrics
+above are simply omitted for that scrape, without flipping
+`sonarqube_prometheus_exporter_up` to `0`. A least-privilege token that
+was never granted Administer System is a valid, intentional configuration,
+not an outage.
+
+This is distinct from (and a strict improvement over) SonarQube's own
+native `sonarqube_health_web_status` / `_compute_engine_status` /
+`_elasticsearch_status` gauges (scraped separately, directly from
+SonarQube's `/api/monitoring/metrics`) -- those are binary per-component
+signals with no YELLOW equivalent, whereas this is the real, aggregate
+3-valued status SonarQube's own System Info page shows.
 
 ### Exporter self-health
 

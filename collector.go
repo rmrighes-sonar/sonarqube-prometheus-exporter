@@ -28,6 +28,7 @@ var (
 
 	qualityGateStatuses  = []string{"OK", "ERROR", "WARN", "NONE"}
 	analysisTaskStatuses = []string{"SUCCESS", "FAILED", "CANCELED"}
+	systemHealthStatuses = []string{"GREEN", "YELLOW", "RED"}
 )
 
 func desc(name, help string, labels ...string) *prometheus.Desc {
@@ -65,6 +66,9 @@ var (
 
 	upDesc             = desc("prometheus_exporter_up", "Whether the last scrape of SonarQube's Web API succeeded (1) or not (0).")
 	scrapeDurationDesc = desc("prometheus_exporter_scrape_duration_seconds", "Duration of the last scrape of SonarQube's Web API, in seconds.")
+
+	systemHealthStatusDesc = desc("system_health_status", "1 if SonarQube's overall system health (GET /api/system/health) currently has this status, 0 otherwise. Requires the 'Administer System' permission; simply absent (not emitted) if unavailable.", "status")
+	systemHealthCausesDesc = desc("system_health_causes_total", "Number of causes currently contributing to a non-GREEN system health status.")
 )
 
 // Collector implements prometheus.Collector by querying SonarQube's Web API
@@ -113,6 +117,7 @@ func (c *Collector) Collect(ch chan<- prometheus.Metric) {
 		up = 0
 		c.scrapeErrors.Inc()
 	}
+	c.collectSystemHealth(ch)
 
 	ch <- prometheus.MustNewConstMetric(upDesc, prometheus.GaugeValue, up)
 	ch <- prometheus.MustNewConstMetric(scrapeDurationDesc, prometheus.GaugeValue, time.Since(start).Seconds())
@@ -240,6 +245,25 @@ func (c *Collector) collectPortfolios(ch chan<- prometheus.Metric) error {
 	}
 
 	return nil
+}
+
+// collectSystemHealth emits SonarQube's real GREEN/YELLOW/RED overall
+// health. Unlike collectProjects/collectPortfolios, a failure here is
+// deliberately non-fatal: GET /api/system/health requires the "Administer
+// System" global permission, which is a strictly higher bar than the
+// Browse permission every other call in this exporter needs. Flipping
+// sonarqube_prometheus_exporter_up to 0 (and incrementing scrape_errors_total)
+// just because a least-privilege, project-scoped token can't reach this one
+// optional, richer health signal would be a false "the exporter is broken"
+// alarm for existing deployments that never asked for it. So: log and skip.
+func (c *Collector) collectSystemHealth(ch chan<- prometheus.Metric) {
+	h, err := c.client.GetSystemHealth()
+	if err != nil {
+		log.Printf("sonarqube-prometheus-exporter: system/health unavailable (requires the 'Administer System' permission), skipping: %v", err)
+		return
+	}
+	emitStatusMetrics(ch, systemHealthStatusDesc, h.Health, systemHealthStatuses)
+	ch <- prometheus.MustNewConstMetric(systemHealthCausesDesc, prometheus.GaugeValue, float64(len(h.Causes)))
 }
 
 // pivotMeasures reshapes SonarQube's row-per-(component,metric) measures

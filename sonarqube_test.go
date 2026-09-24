@@ -199,6 +199,43 @@ func TestSonarQubeClientRecentAnalyses(t *testing.T) {
 	}
 }
 
+func TestSonarQubeClientGetSystemHealth(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/api/system/health" {
+			t.Errorf("unexpected path: %s", r.URL.Path)
+		}
+		_ = json.NewEncoder(w).Encode(SystemHealth{
+			Health: "YELLOW",
+			Causes: []SystemHealthCause{{Message: "Elasticsearch cluster status is YELLOW"}},
+		})
+	}))
+	defer srv.Close()
+
+	client := NewSonarQubeClient(srv.URL, "")
+	health, err := client.GetSystemHealth()
+	if err != nil {
+		t.Fatalf("GetSystemHealth() error = %v", err)
+	}
+	if health.Health != "YELLOW" {
+		t.Errorf("GetSystemHealth().Health = %q, want %q", health.Health, "YELLOW")
+	}
+	if len(health.Causes) != 1 {
+		t.Fatalf("GetSystemHealth().Causes = %+v, want 1 cause", health.Causes)
+	}
+}
+
+func TestSonarQubeClientGetSystemHealthForbidden(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusForbidden)
+	}))
+	defer srv.Close()
+
+	client := NewSonarQubeClient(srv.URL, "")
+	if _, err := client.GetSystemHealth(); err == nil {
+		t.Fatal("expected an error for a 403 response, got nil")
+	}
+}
+
 func TestSonarQubeClientGetRequestBuildError(t *testing.T) {
 	// A control character in the host makes url.Parse (inside
 	// http.NewRequest) fail, exercising the "building request" error path
