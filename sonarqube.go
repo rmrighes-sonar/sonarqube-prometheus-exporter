@@ -167,6 +167,34 @@ func (c *SonarQubeClient) RecentAnalyses() ([]CETask, error) {
 	return out.Tasks, err
 }
 
+// SystemHealthCause is one entry in a SystemHealth response's causes list.
+type SystemHealthCause struct {
+	Message string `json:"message"`
+}
+
+// SystemHealth is the response from GET /api/system/health: SonarQube's
+// real 3-valued (GREEN/YELLOW/RED) overall health assessment, plus the
+// specific reasons for any non-GREEN status. Distinct from (and richer
+// than) the binary sonarqube_health_web_status/_compute_engine_status/
+// _elasticsearch_status gauges exposed by SonarQube's own native
+// /api/monitoring/metrics endpoint.
+type SystemHealth struct {
+	Health string              `json:"health"`
+	Causes []SystemHealthCause `json:"causes"`
+}
+
+// GetSystemHealth calls GET /api/system/health. Requires the "Administer
+// System" global permission -- a stricter requirement than every other
+// call this client makes (which only need Browse on the relevant
+// project/portfolio). Callers should treat failure here as potentially a
+// permissions gap rather than a genuine outage; see collectSystemHealth's
+// non-fatal handling in collector.go.
+func (c *SonarQubeClient) GetSystemHealth() (SystemHealth, error) {
+	var out SystemHealth
+	err := c.get("/api/system/health", nil, &out)
+	return out, err
+}
+
 // parseSonarTime parses SonarQube's timestamp format, e.g.
 // "2017-03-01T11:39:03+0300" -- note the timezone offset has no colon, which
 // trips up naive ISO-8601 parsers (this is the exact issue that previously
