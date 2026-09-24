@@ -49,19 +49,74 @@ Then scrape/inspect `http://localhost:9091/metrics`.
 
 ### Building locally
 
+`go build ./...` alone isn't enough to `docker build` anymore -- the
+Dockerfile no longer compiles anything itself (see [CI/CD](#cicd) below),
+it just copies in a prebuilt binary from `dist/linux/<arch>/`. Populate that
+first, for your host's architecture:
+
 ```
-go build ./...
+go vet ./...
+mkdir -p "dist/linux/$(go env GOARCH)"
+GOOS=linux GOARCH="$(go env GOARCH)" CGO_ENABLED=0 \
+  go build -trimpath -ldflags="-s -w" \
+  -o "dist/linux/$(go env GOARCH)/sonarqube-prometheus-exporter" .
 docker build -t sonarqube-prometheus-exporter .
 ```
 
 ### CI/CD
 
-`.github/workflows/build.yml` builds and pushes
-`ghcr.io/rmrighes-sonar/sonarqube-prometheus-exporter:latest` (and a `:<git-sha>` tag)
-on every push to `main`, using the workflow's own `GITHUB_TOKEN` -- no extra
-secrets needed. The GHCR package is private, matching this repo's
-visibility; pulling it elsewhere requires `docker login ghcr.io` once with a
-token that has read access.
+`.github/workflows/ci.yml` is a single workflow with four jobs chained via
+`needs:` so the whole pipeline renders as one graph on the Actions run page:
+
+```mermaid
+flowchart LR
+    build[Build] --> test[Test] --> sonar[SonarQube Analysis] --> publish[Publish]
+```
+
+**Build-once, reuse-everywhere** -- the Go compiler runs exactly twice total
+per run (`build`'s cross-compile, `test`'s test-compile), and Docker never
+compiles anything:
+
+- **`build`** -- `go vet`, then cross-compiles static `linux/amd64` and
+  `linux/arm64` binaries natively (Go's own cross-compiler, no QEMU needed)
+  and uploads them as a build artifact.
+- **`test`** (needs `build`) -- `go test -coverprofile=coverage.out`,
+  uploads `coverage.out` as an artifact.
+- **`sonarqube`** (needs `test`) -- downloads that coverage artifact and
+  scans with it directly; **doesn't re-run the tests**. Requires
+  `SONAR_TOKEN` (secret) and `SONAR_HOST_URL` (variable).
+- **`publish`** (needs `build`, `test`, `sonarqube`; push to `main` only) --
+  downloads `build`'s binaries and assembles the image via
+  `docker buildx build`, whose Dockerfile only `COPY`s the right prebuilt
+  binary per platform (no in-container compilation). Pushes
+  `ghcr.io/rmrighes-sonar/sonarqube-prometheus-exporter:latest` and
+  `:<git-sha>`. **Now gated on `sonarqube` passing** -- unlike before, a
+  quality-gate failure blocks the image publish.
+
+Both the `push` and `pull_request` triggers set
+`paths-ignore: [CHANGELOG.md, .release-please-manifest.json]` --
+release-please's Release PRs and their merge commits only ever touch those
+two files, so this pipeline doesn't re-validate/re-scan/re-publish
+something that already went through CI moments earlier under the real code
+change -- see [Releases](#releases) below.
+
+The GHCR package is private, matching this repo's visibility; pulling it
+elsewhere requires `docker login ghcr.io` once with a token that has read
+access.
+
+**`main` is protected:** merging requires an open pull request with `build`,
+`test`, and `sonarqube` all green (`publish` doesn't run on PRs, so it isn't
+a required check), and direct pushes/force-pushes/deletion of `main` are
+blocked. There's intentionally no required-approval count -- GitHub never
+allows an account to approve its own pull request, and this repo has a
+single maintainer, so requiring N approvals would make every PR permanently
+unmergeable.
+
+**Known bottleneck:** SonarQube here is self-hosted, reachable only through
+`sonarqube-compose`'s `ngrok` tunnel. If that stack or tunnel isn't up when
+CI runs, the `sonarqube` job fails -- and since it's a required check, that
+blocks every merge to `main` (and every image publish) until the local
+stack is back up.
 
 ### Releases
 
@@ -83,13 +138,16 @@ correct version bump, commits to `main` must follow
 release-please maintains a standing "Release PR" that accumulates changes
 since the last release; merging it cuts the actual git tag, GitHub Release,
 and CHANGELOG.md entry. That same merge also triggers
-`publish-release-image` in the same workflow, which builds and pushes
-additional semver-tagged images --
+`publish-release-image` in the same workflow, which adds semver tags --
 `ghcr.io/rmrighes-sonar/sonarqube-prometheus-exporter:<version>`, `:<major>.<minor>`,
-and `:<major>` -- alongside the `:latest`/`:<git-sha>` tags `build.yml`
-already publishes on every push to `main`. Pin to a `:<major>` or
-`:<major>.<minor>` tag instead of `:latest` if you want a stable,
-intentionally-upgraded version in `sonarqube-compose`'s `compose.yaml`.
+and `:<major>` -- onto the `:<git-sha>` image `ci.yml`'s `publish` job
+already built and pushed for that exact commit. It does this via
+`docker buildx imagetools create` (a manifest copy), not a rebuild -- the
+code was already compiled, tested, scanned, and published seconds earlier
+by `ci.yml`, so there's nothing to gain from recompiling it a second time
+just to attach version tags. Pin to a `:<major>` or `:<major>.<minor>` tag
+instead of `:latest` if you want a stable, intentionally-upgraded version in
+`sonarqube-compose`'s `compose.yaml`.
 
 ## How it works
 
