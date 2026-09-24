@@ -1,5 +1,13 @@
 # Changelog
 
+> **Historical record, no longer updated.** This repo switched from
+> release-please to [semantic-release](https://semantic-release.gitbook.io/)
+> (see the "Releases" section of README.md) -- every merge to `main` now
+> gets its own tagged version and release notes directly on the
+> [GitHub Releases page](https://github.com/rmrighes-sonar/sonarqube-prometheus-exporter/releases)
+> instead of an in-repo file. Entries below cover everything up through
+> `v1.0.0`.
+
 ## [1.0.0](https://github.com/rmrighes-sonar/sonarqube-prometheus-exporter/compare/v0.2.1...v1.0.0) (2026-09-17)
 
 
