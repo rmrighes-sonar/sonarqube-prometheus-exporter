@@ -9,19 +9,60 @@ name: CI
 on:
   push:
     branches: [main]
-    paths-ignore:
-      - CHANGELOG.md
-      - .release-please-manifest.json
   pull_request:
-    paths-ignore:
-      - CHANGELOG.md
-      - .release-please-manifest.json
 
 env:
   IMAGE: ghcr.io/${{ github.repository }}
 
 jobs:
+  changes:
+    # Determines whether this push/PR only touches release-please's
+    # CHANGELOG.md / .release-please-manifest.json. Deliberately not using
+    # `paths-ignore` on the triggers above for this: build/test/sonarqube
+    # are required status checks in branch protection, and a workflow that
+    # never runs at all for a given commit (via paths-ignore) leaves those
+    # checks permanently stuck as "Expected" -- unmergeable, with no
+    # override since enforce_admins is on. Instead this job always runs (so
+    # the checks always get a chance to report), and downstream jobs skip
+    # their real work via `if:`/needs: cascading for a release-only diff. A
+    # job skipped via `if:` reports conclusion "skipped", which GitHub
+    # explicitly treats as passing for required status check purposes.
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    outputs:
+      release_only: ${{ steps.check.outputs.release_only }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
+      - id: check
+        run: |
+          set -euo pipefail
+          if [ "${{ github.event_name }}" = "pull_request" ]; then
+            BASE="${{ github.event.pull_request.base.sha }}"
+          else
+            BASE="${{ github.event.before }}"
+          fi
+          if [ -z "$BASE" ] || [ "$BASE" = "0000000000000000000000000000000000000000" ] || ! git cat-file -e "$BASE" 2>/dev/null; then
+            echo "No usable base commit to diff against (new branch or unavailable history) -- treating as a real change."
+            echo "release_only=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          CHANGED="$(git diff --name-only "$BASE" "${{ github.sha }}")"
+          echo "Changed files vs $BASE:"
+          echo "$CHANGED"
+          if [ -n "$CHANGED" ] && ! grep -qvE '^(CHANGELOG\.md|\.release-please-manifest\.json)$' <<< "$CHANGED"; then
+            echo "-> release-please changelog/manifest-only change, skipping build/test/sonarqube/publish"
+            echo "release_only=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "release_only=false" >> "$GITHUB_OUTPUT"
+          fi
+
   build:
+    needs: changes
+    if: needs.changes.outputs.release_only != 'true'
     # go vet, then cross-compile the two binaries the rest of the pipeline
     # needs -- Go's cross-compiler targets linux/amd64 and linux/arm64
     # natively (CGO_ENABLED=0, no gcc/QEMU needed), so this is fast even for
@@ -127,8 +168,13 @@ jobs:
     needs: [build, test, sonarqube]
     # Only publish an image from main, and only once the quality gate has
     # passed -- unlike the old design, an image can no longer publish while
-    # sonarqube is failing.
-    if: github.event_name == 'push'
+    # sonarqube is failing. An explicit `if:` replaces the default implicit
+    # success()-on-needs check entirely (GitHub doesn't AND them together),
+    # so success() must be spelled out here too -- otherwise this would
+    # still attempt to run (and fail downloading build's never-uploaded
+    # artifact) on a release-only push where build/test/sonarqube all
+    # skipped rather than succeeded.
+    if: github.event_name == 'push' && success()
     runs-on: ubuntu-latest
     permissions:
       contents: read

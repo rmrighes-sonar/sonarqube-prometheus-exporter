@@ -70,13 +70,17 @@ docker build -t sonarqube-prometheus-exporter .
 
 ```mermaid
 flowchart LR
-    build[Build] --> test[Test] --> sonar[SonarQube Analysis] --> publish[Publish]
+    changes[Detect changed files] --> build[Build] --> test[Test] --> sonar[SonarQube Analysis] --> publish[Publish]
 ```
 
 **Build-once, reuse-everywhere** -- the Go compiler runs exactly twice total
 per run (`build`'s cross-compile, `test`'s test-compile), and Docker never
 compiles anything:
 
+- **`changes`** -- always runs first; diffs the push/PR against its base
+  commit to detect a release-please-only change (see "Release commits are
+  skipped" below for why this exists as a job instead of a simpler
+  trigger-level filter).
 - **`build`** -- `go vet`, then cross-compiles static `linux/amd64` and
   `linux/arm64` binaries natively (Go's own cross-compiler, no QEMU needed)
   and uploads them as a build artifact.
@@ -93,16 +97,30 @@ compiles anything:
   `:<git-sha>`. **Now gated on `sonarqube` passing** -- unlike before, a
   quality-gate failure blocks the image publish.
 
-Both the `push` and `pull_request` triggers set
-`paths-ignore: [CHANGELOG.md, .release-please-manifest.json]` --
-release-please's Release PRs and their merge commits only ever touch those
-two files, so this pipeline doesn't re-validate/re-scan/re-publish
-something that already went through CI moments earlier under the real code
-change -- see [Releases](#releases) below.
+**Release commits are skipped -- via job-level `if:`, not `paths-ignore`:**
+release-please's Release PRs and their merge commits only ever touch
+`CHANGELOG.md` / `.release-please-manifest.json`, so there's nothing new
+for `build`/`test`/`sonarqube`/`publish` to do there -- see
+[Releases](#releases) below. It's tempting to skip this with `paths-ignore`
+on the workflow's triggers, but **don't**: `build`/`test`/`sonarqube` are
+required status checks in branch protection, and a workflow that never runs
+at all for a given commit leaves those checks stuck as "Expected" forever
+-- unmergeable, with no override since `main`'s protection also enforces
+against admins. Instead, `changes` always runs (so the checks always get a
+chance to report), and `build` skips its real work via
+`if: needs.changes.outputs.release_only != 'true'` -- `test` and
+`sonarqube` then skip too automatically, cascading through their `needs:`
+chain (a job's default condition requires its dependencies to have
+succeeded; skipped doesn't count as succeeded). `publish` needed an extra
+fix for this: it already had an explicit `if: github.event_name == 'push'`,
+which *replaces* the default implicit success-on-needs check rather than
+adding to it, so it now reads
+`if: github.event_name == 'push' && success()` to still cascade-skip
+correctly. A job skipped via `if:` reports conclusion "skipped", which
+GitHub explicitly treats as passing for required status checks -- unlike a
+check that never ran.
 
-The GHCR package is private, matching this repo's visibility; pulling it
-elsewhere requires `docker login ghcr.io` once with a token that has read
-access.
+The GHCR package is public, matching this repo's visibility.
 
 **`main` is protected:** merging requires an open pull request with `build`,
 `test`, and `sonarqube` all green (`publish` doesn't run on PRs, so it isn't
