@@ -15,7 +15,14 @@ RUN apk add --no-cache ca-certificates wget && \
 # TARGETARCH is set automatically by BuildKit/buildx per target platform
 # (e.g. "amd64", "arm64") -- no need to pass it explicitly.
 ARG TARGETARCH
-COPY dist/linux/${TARGETARCH}/sonarqube-prometheus-exporter /usr/local/bin/sonarqube-prometheus-exporter
+# --chmod=755 is required, not just nice-to-have: actions/upload-artifact
+# and actions/download-artifact (ci.yml's build -> publish artifact
+# handoff) don't reliably preserve Unix executable permission bits across
+# their zip round-trip, so the binary can arrive here without +x even
+# though it left `go build` with it. Without this, the container fails at
+# runtime with "permission denied" trying to exec the entrypoint --
+# confirmed by an actual publish+pull of this image.
+COPY --chmod=755 dist/linux/${TARGETARCH}/sonarqube-prometheus-exporter /usr/local/bin/sonarqube-prometheus-exporter
 USER exporter
 EXPOSE 9091
 ENTRYPOINT ["/usr/local/bin/sonarqube-prometheus-exporter"]
